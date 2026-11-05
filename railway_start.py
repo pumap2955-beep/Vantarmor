@@ -12,6 +12,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
+from message_reactions_patch import patch_app
+
 ROOT = Path(__file__).resolve().parent
 APP_FILE = ROOT / "app.py"
 WEB_DIR = ROOT / "website"
@@ -343,5 +345,6 @@ if '"ticket_panel"' not in defaults and "'ticket_panel'" not in defaults:
         raise RuntimeError("No pude añadir ticket_panel a CONFIG_DEFAULTS en app.py.")
     APP_FILE.write_text(source[:start] + updated + source[end:], encoding="utf-8")
 
+patch_app(APP_FILE)
 start_website()
 runpy.run_path(str(APP_FILE), run_name="__main__")
