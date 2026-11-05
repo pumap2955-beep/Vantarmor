@@ -66,6 +66,28 @@ def exchange_code(code, settings):
         return json.loads(response.read().decode("utf-8"))
 
 
+def discord_error_details(error):
+    """Extract only safe OAuth error fields; never log request credentials."""
+    try:
+        payload = json.loads(error.read(4096).decode("utf-8", errors="replace"))
+    except (ValueError, OSError):
+        return "unknown", "No se recibió una descripción válida de Discord."
+    code = str(payload.get("error") or payload.get("code") or "unknown")[:80]
+    description = str(payload.get("error_description") or payload.get("message") or "Sin descripción")
+    description = " ".join(description.split())[:240]
+    return code, description
+
+
+def oauth_failure_message(stage, status, code):
+    if code == "invalid_client":
+        return "Discord rechazó las credenciales de la aplicación (invalid_client). Comprueba que el Client ID y Client Secret sean de la misma aplicación."
+    if code == "invalid_grant":
+        return "Discord rechazó el código de autorización (invalid_grant). Reintenta desde la web y verifica que la URL de retorno coincida exactamente en Railway y Discord."
+    if stage == "profile":
+        return f"El inicio de sesión fue aceptado, pero Discord rechazó la consulta del perfil (HTTP {status}). Vuelve a iniciar sesión."
+    return f"Discord rechazó el intercambio OAuth (HTTP {status}, {code}). Revisa los logs de Railway para ver la etapa y el detalle seguro del error."
+
+
 def session_for(handler):
     session_id = get_cookie(handler, "vantarmor_session")
     if not session_id:
@@ -152,14 +174,29 @@ class WebsiteHandler(SimpleHTTPRequestHandler):
             if not all(settings.values()):
                 self.send_text("Falta configurar Discord OAuth en Railway.", 503)
                 return
+
+            stage = "token_exchange"
             try:
                 token_data = exchange_code(code, settings)
                 access_token = token_data["access_token"]
+                stage = "profile"
                 user = discord_request("/users/@me", access_token)
                 expires_in = max(60, int(token_data.get("expires_in", 3600)))
-            except (HTTPError, URLError, TimeoutError, KeyError, ValueError) as error:
-                print(f"Falló la autenticación OAuth de Discord: {type(error).__name__}")
-                self.send_text("No se pudo completar el inicio de sesión con Discord. Comprueba OAuth y vuelve a intentar.", 502)
+            except HTTPError as error:
+                error_code, description = discord_error_details(error)
+                print(
+                    f"Discord OAuth rechazado; etapa={stage}, HTTP={error.code}, "
+                    f"error={error_code}, detalle={description}"
+                )
+                self.send_text(oauth_failure_message(stage, error.code, error_code), 502)
+                return
+            except (URLError, TimeoutError) as error:
+                print(f"Discord OAuth no disponible; etapa={stage}, tipo={type(error).__name__}")
+                self.send_text("No pudimos conectar con Discord. Espera un momento y vuelve a intentarlo.", 502)
+                return
+            except (KeyError, ValueError, TypeError) as error:
+                print(f"Respuesta OAuth de Discord no válida; etapa={stage}, tipo={type(error).__name__}")
+                self.send_text("Discord devolvió una respuesta inesperada. Vuelve a iniciar sesión.", 502)
                 return
 
             session_id = secrets.token_urlsafe(32)
@@ -195,8 +232,13 @@ class WebsiteHandler(SimpleHTTPRequestHandler):
                 return
             try:
                 guilds = discord_request("/users/@me/guilds", session["access_token"])
-            except (HTTPError, URLError, TimeoutError, ValueError) as error:
-                print(f"No se pudieron consultar servidores de Discord: {type(error).__name__}")
+            except HTTPError as error:
+                code, description = discord_error_details(error)
+                print(f"Consulta de servidores rechazada; HTTP={error.code}, error={code}, detalle={description}")
+                self.send_json({"error": "guild_lookup_failed"}, 502)
+                return
+            except (URLError, TimeoutError, ValueError) as error:
+                print(f"Error al consultar servidores; tipo={type(error).__name__}")
                 self.send_json({"error": "guild_lookup_failed"}, 502)
                 return
             manageable = []
@@ -226,9 +268,6 @@ class WebsiteHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             return
 
-        # All website content is behind Discord verification. Serve only the
-        # login screen to signed-out visitors, and never expose static assets
-        # except the public website shell.
         if path == "/" or path == "/index.html":
             return super().do_GET()
         if path.startswith("/assets/"):
