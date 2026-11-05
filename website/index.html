@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101018">
+  <meta name="description" content="Vantarmor: un bot de Discord para moderación, seguridad, tickets y diversión.">
+  <title>Vantarmor — Tu servidor, bajo control</title>
+  <style>
+    :root{color-scheme:dark;--bg:#101018;--panel:#191925;--muted:#a6a4b8;--text:#f7f5ff;--purple:#9b7bff;--pink:#ed77c8;--line:#ffffff16}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(ellipse at 75% 0%,#39215a66 0,transparent 35%),var(--bg);color:var(--text);font:16px/1.6 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}a{color:inherit;text-decoration:none}.wrap{width:min(1100px,calc(100% - 40px));margin:auto}
+    header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:center}.nav{display:flex;align-items:center;justify-content:space-between}.brand{font-weight:850;font-size:1.2rem;letter-spacing:.02em;display:flex;gap:10px;align-items:center}.brand-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:11px;background:linear-gradient(135deg,var(--purple),var(--pink));box-shadow:0 6px 25px #9b7bff55}.navlinks{display:flex;align-items:center;gap:26px;color:var(--muted);font-size:.92rem}.navlinks a:hover{color:white}
+    .button{display:inline-flex;align-items:center;justify-content:center;gap:9px;padding:12px 19px;border-radius:12px;background:linear-gradient(120deg,var(--purple),#7751e8);color:white;font-weight:750;border:1px solid #ffffff20;box-shadow:0 8px 26px #7f5af533;transition:transform .18s,filter .18s}.button:hover{transform:translateY(-2px);filter:brightness(1.1)}.button.secondary{background:#ffffff0b;box-shadow:none;border-color:var(--line)}.button.disabled{opacity:.5;pointer-events:none}
+    .hero{padding:105px 0 92px;text-align:center;position:relative}.eyebrow{display:inline-flex;align-items:center;gap:8px;color:#d4c8ff;background:#9b7bff18;border:1px solid #9b7bff42;padding:6px 12px;border-radius:99px;font-size:.85rem;font-weight:700}.dot{width:8px;height:8px;background:#a991ff;border-radius:50%;box-shadow:0 0 12px #a991ff}h1{font-size:clamp(2.8rem,8vw,5.5rem);line-height:1.03;letter-spacing:-.06em;margin:23px auto 18px;max-width:850px}h1 span{background:linear-gradient(90deg,#c7b5ff,#f092d3);-webkit-background-clip:text;background-clip:text;color:transparent}.hero p{max-width:650px;margin:0 auto 30px;color:var(--muted);font-size:1.13rem}.actions{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}.hint{min-height:24px;color:#c5b7ff;font-size:.85rem;margin-top:12px}
+    .section{padding:65px 0}.section-head{text-align:center;margin:0 auto 34px;max-width:620px}.section-head h2{font-size:clamp(1.8rem,4vw,2.6rem);letter-spacing:-.04em;margin:0 0 8px}.section-head p{margin:0;color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.card{padding:23px;background:linear-gradient(145deg,#ffffff0c,#ffffff05);border:1px solid var(--line);border-radius:18px}.card-icon{font-size:1.45rem}.card h3{margin:12px 0 5px;font-size:1.05rem}.card p{margin:0;color:var(--muted);font-size:.94rem}.commands{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;max-width:760px;margin:auto}.command{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 17px;color:var(--muted)}code{color:#d8caff;background:#9b7bff18;padding:3px 7px;border-radius:6px;margin-right:8px}.cta{margin:35px auto 80px;padding:38px 26px;text-align:center;border-radius:22px;border:1px solid #ad8dff38;background:radial-gradient(ellipse at 50% 0%,#8d62ff2b,transparent 70%),var(--panel)}.cta h2{margin:0 0 8px;font-size:1.8rem}.cta p{color:var(--muted);margin:0 0 20px}footer{border-top:1px solid var(--line);padding:24px 0;color:var(--muted);font-size:.9rem}.foot{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap}
+    @media(max-width:720px){.navlinks>a:not(.button){display:none}.hero{padding:76px 0 60px}.grid{grid-template-columns:1fr}.commands{grid-template-columns:1fr}.section{padding:48px 0}.wrap{width:min(100% - 30px,1100px)}}
+  </style>
+</head>
+<body>
+  <header><nav class="wrap nav" aria-label="Navegación principal"><a class="brand" href="#inicio"><span class="brand-icon">V</span> Vantarmor</a><div class="navlinks"><a href="#funciones">Funciones</a><a href="#comandos">Comandos</a><a id="support-nav" href="#contacto" hidden>Soporte</a><a class="button invite-link disabled" href="#" aria-disabled="true">Añadir a Discord ↗</a></div></nav></header>
+  <main id="inicio">
+    <section class="hero wrap"><div class="eyebrow"><span class="dot"></span> Tu compañero para Discord</div><h1>Tu servidor.<br><span>Más seguro y divertido.</span></h1><p>Moderación, protección, tickets y pequeños juegos en un solo bot. Configúralo en minutos y deja que Vantarmor te ayude con el día a día.</p><div class="actions"><a class="button invite-link disabled" href="#" aria-disabled="true">✦ Añadir Vantarmor</a><a class="button secondary" href="#funciones">Descubrir funciones ↓</a></div><div class="hint" id="invite-hint" role="status">Configura el enlace de invitación para añadir el bot.</div></section>
+    <section class="section wrap" id="funciones"><div class="section-head"><h2>Todo lo que tu comunidad necesita</h2><p>Herramientas útiles para que puedas dedicar más tiempo a tu comunidad.</p></div><div class="grid">
+      <article class="card"><div class="card-icon">🛡️</div><h3>Moderación y seguridad</h3><p>Comandos de moderación, bloqueo de palabras, antispam y filtro de enlaces para mantener el chat en orden.</p></article>
+      <article class="card"><div class="card-icon">🎫</div><h3>Tickets de soporte</h3><p>Un panel sencillo para abrir conversaciones privadas con tu equipo de soporte y organizarlas por categoría.</p></article>
+      <article class="card"><div class="card-icon">🧰</div><h3>Administración práctica</h3><p>Configura autoroles y registros, consulta información del servidor y usa herramientas para gestionar canales.</p></article>
+      <article class="card"><div class="card-icon">🎲</div><h3>Juegos y comunidad</h3><p>Incluye juegos sencillos para darle un poco de diversión a las conversaciones de tu servidor.</p></article>
+      <article class="card"><div class="card-icon">🌙</div><h3>Estado AFK</h3><p>Indica cuándo no estás disponible y permite que los demás sepan el motivo al mencionarte.</p></article>
+      <article class="card"><div class="card-icon">⚙️</div><h3>Comandos de Discord</h3><p>Usa comandos slash desde Discord para acceder a las herramientas de manera clara y rápida.</p></article>
+    </div></section>
+    <section class="section wrap" id="comandos"><div class="section-head"><h2>Empieza con estos comandos</h2><p>Los comandos disponibles aparecen en Discord al escribir <code>/</code>.</p></div><div class="commands"><div class="command"><code>/ayuda</code> Consulta los comandos principales</div><div class="command"><code>/ping</code> Comprueba que el bot responde</div><div class="command"><code>/ticket-panel</code> Publica un panel de soporte</div><div class="command"><code>/antispam</code> Configura la protección contra spam</div><div class="command"><code>/antilink</code> Activa o desactiva el filtro de enlaces</div><div class="command"><code>/serverinfo</code> Consulta información del servidor</div></div></section>
+    <section class="cta wrap" id="contacto"><h2>¿Listos para empezar?</h2><p>Añade Vantarmor a tu servidor y explora sus herramientas.</p><div class="actions"><a class="button invite-link disabled" href="#" aria-disabled="true">Añadir a Discord ↗</a><a id="support-button" class="button secondary" href="#" hidden>Servidor de soporte</a></div></section>
+  </main>
+  <footer><div class="wrap foot"><span>© <span id="year"></span> Vantarmor</span><span>Hecho para comunidades de Discord ✦</span></div></footer>
+  <script>
+    document.getElementById('year').textContent = new Date().getFullYear();
+    fetch('/config.json').then(response => response.ok ? response.json() : {}).then(config => {
+      const hint = document.getElementById('invite-hint');
+      if (config.client_id) {
+        const invite = `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(config.client_id)}&scope=bot%20applications.commands&permissions=0`;
+        document.querySelectorAll('.invite-link').forEach(link => {
+          link.href = invite;
+          link.classList.remove('disabled');
+          link.removeAttribute('aria-disabled');
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+        });
+        hint.textContent = 'Se abrirá Discord para que elijas el servidor y los permisos.';
+      }
+      if (config.support_url) {
+        ['support-nav', 'support-button'].forEach(id => {
+          const link = document.getElementById(id);
+          link.href = config.support_url;
+          link.hidden = false;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+        });
+      }
+    }).catch(() => {});
+  </script>
+</body>
+</html>
