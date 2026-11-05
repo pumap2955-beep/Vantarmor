@@ -58,6 +58,10 @@ def exchange_code(code, settings):
         "code": code,
         "redirect_uri": settings["redirect_uri"],
     }).encode("utf-8")
+    import base64
+    credentials = base64.b64encode(
+        f"{settings['client_id']}:{settings['client_secret']}".encode("utf-8")
+    ).decode("ascii")
     request = Request(
         f"{DISCORD_API}/oauth2/token",
         data=body,
@@ -65,12 +69,10 @@ def exchange_code(code, settings):
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
             "User-Agent": "Vantarmor (https://vantarmor-production.up.railway.app, 1.0)",
+            "Authorization": f"Basic {credentials}",
         },
         method="POST",
     )
-    request.add_header("Authorization", "Basic " + __import__("base64").b64encode(
-        f"{settings['client_id']}:{settings['client_secret']}".encode("utf-8")
-    ).decode("ascii"))
     with urlopen(request, timeout=15) as response:
         return json.loads(response.read().decode("utf-8"))
 
@@ -291,7 +293,20 @@ class WebsiteHandler(SimpleHTTPRequestHandler):
             return
 
         if path == "/" or path == "/index.html":
-            return super().do_GET()
+            # Inject the authenticated dashboard navigation without changing the existing login shell.
+            html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+            script_tag = '<script src="/assets/navigation.js" defer></script>'
+            if script_tag not in html:
+                html = html.replace("</body>", f"  {script_tag}\n</body>", 1)
+            payload = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if path.startswith("/assets/"):
             return super().do_GET()
         if not session_for(self):
