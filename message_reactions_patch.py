@@ -130,8 +130,28 @@ async def handle_reaction_command(message, content):
     return True
 '''
 
-AFK_COOKIE_MARKER = "# VANTARMOR_AFK_COOKIE_FIX"
-AFK_COOKIE_HELPERS = r'''# VANTARMOR_AFK_COOKIE_FIX
+AFK_COOKIE_WARN_MARKER = "# VANTARMOR_AFK_COOKIE_WARN_V1"
+AFK_COOKIE_WARN_HELPERS = r'''# VANTARMOR_AFK_COOKIE_WARN_V1
+WARNINGS_FILE = Path("warnings.json")
+
+
+def load_warnings():
+    try:
+        value = json.loads(WARNINGS_FILE.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_warnings():
+    try:
+        WARNINGS_FILE.write_text(json.dumps(warnings, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as error:
+        print(f"No pude guardar las advertencias: {error}")
+
+
+warnings = load_warnings()
+
 
 def elapsed_label(seconds):
     seconds = max(0, int(seconds))
@@ -154,9 +174,42 @@ def afk_departure_text(user, state):
     return f"👋 {user.mention} ha salido de su estado AFK.\n⏱️ Llevaba **{duration}** AFK.\n📝 Motivo: {reason}"
 
 
+async def apply_warning_action(guild, moderator, target, action, duration_seconds_value, reason):
+    bot_member = guild.me
+    if bot_member is None:
+        return "No pude verificar los permisos del bot."
+    if target.bot or target.id == guild.owner_id:
+        return "No se puede sancionar a un bot ni al propietario del servidor."
+    if target.id == moderator.id or (isinstance(moderator, discord.Member) and target.top_role >= moderator.top_role and moderator.id != guild.owner_id):
+        return "No puedes sancionar a alguien con un rol igual o superior al tuyo, ni a ti mismo."
+    if target.top_role >= bot_member.top_role:
+        return "No puedo sancionar: el rol del miembro está por encima o al mismo nivel que el del bot."
+    try:
+        if action == "ban":
+            if not bot_member.guild_permissions.ban_members:
+                return "Al bot le falta el permiso Banear miembros."
+            await guild.ban(target, reason=reason, delete_message_seconds=0)
+            return f"🔨 {target.mention} fue baneado al alcanzar el límite de advertencias."
+        if action == "kick":
+            if not bot_member.guild_permissions.kick_members:
+                return "Al bot le falta el permiso Expulsar miembros."
+            await guild.kick(target, reason=reason)
+            return f"👢 {target.mention} fue expulsado al alcanzar el límite de advertencias."
+        if action == "timeout":
+            if not bot_member.guild_permissions.moderate_members:
+                return "Al bot le falta el permiso Moderar miembros."
+            seconds = max(60, min(int(duration_seconds_value or 3600), 28 * 86400))
+            await target.timeout(datetime.now(timezone.utc) + timedelta(seconds=seconds), reason=reason)
+            return f"🔇 {target.mention} fue silenciado durante **{duration_label(seconds)}** al alcanzar el límite de advertencias."
+    except discord.Forbidden:
+        return "Discord denegó la sanción. Revisa permisos y jerarquía de roles del bot."
+    except discord.HTTPException:
+        return "No se pudo aplicar la sanción por un error de Discord."
+    return "Acción no válida."
+
+
 class CookieGameView(discord.ui.View):
     def __init__(self):
-        # The winner button is available briefly; no periodic message edits occur.
         super().__init__(timeout=60)
         self.message = None
         self.winner_id = None
@@ -210,7 +263,8 @@ def patch_app(app_file: Path) -> None:
 
     source = _remove_generated_block(source, REACTION_MARKER, event_marker)
     source = _remove_generated_block(source, "# VANTARMOR_MESSAGE_REACTIONS\n", event_marker)
-    source = _remove_generated_block(source, AFK_COOKIE_MARKER, '@tree.command(name="cookie"')
+    source = _remove_generated_block(source, AFK_COOKIE_WARN_MARKER, '@tree.command(name="cookie"')
+    source = _remove_generated_block(source, "# VANTARMOR_AFK_COOKIE_FIX\n", '@tree.command(name="cookie"')
 
     content_line = '    content = message.content.strip()\n'
     command_line = '    command = parts[0].lower() if parts else ""\n'
@@ -225,7 +279,7 @@ def patch_app(app_file: Path) -> None:
     cookie_decorator = '@tree.command(name="cookie", description="Juego de tocar la galleta", guild=GUILD)'
     if cookie_decorator not in source:
         raise RuntimeError("No encontré el comando /cookie en app.py.")
-    source = source.replace(cookie_decorator, AFK_COOKIE_HELPERS + "\n\n" + cookie_decorator, 1)
+    source = source.replace(cookie_decorator, AFK_COOKIE_WARN_HELPERS + "\n\n" + cookie_decorator, 1)
 
     cookie_block = re.compile(
         r'@tree\.command\(name="cookie", description="Juego de tocar la galleta", guild=GUILD\)\n'
@@ -245,6 +299,132 @@ async def cookie(interaction):
     source, cookie_count = cookie_block.subn(cookie_replacement, source, count=1)
     if cookie_count != 1:
         raise RuntimeError("No pude actualizar el comando /cookie con la cuenta regresiva y el botón.")
+
+    # Replace the warning command definitions from the previous generated version.
+    warn_start = source.find('@tree.command(name="warn",')
+    if warn_start != -1:
+        warn_end = source.find('@tree.command(name="avatar",', warn_start)
+        if warn_end == -1:
+            raise RuntimeError("No encontré el fin del bloque de advertencias.")
+        source = source[:warn_start] + source[warn_end:]
+
+    warning_commands = r'''
+@tree.command(name="warn", description="Advierte a un miembro y aplica una sanción al llegar al límite", guild=GUILD)
+@app_commands.default_permissions(moderate_members=True)
+@app_commands.choices(accion=[
+    app_commands.Choice(name="Banear", value="ban"),
+    app_commands.Choice(name="Expulsar", value="kick"),
+    app_commands.Choice(name="Silenciar", value="timeout"),
+])
+@app_commands.choices(unidad=[
+    app_commands.Choice(name="Minutos", value="minutes"),
+    app_commands.Choice(name="Horas", value="hours"),
+])
+@app_commands.describe(
+    usuario="Miembro que recibirá la advertencia",
+    limite="Advertencias permitidas antes de aplicar la sanción (1 a 10)",
+    accion="Sanción al alcanzar el límite",
+    duracion="Duración del silencio; requerida si eliges Silenciar",
+    unidad="Unidad de duración del silencio",
+    motivo="Motivo opcional de la advertencia",
+)
+async def warn_command(
+    interaction: discord.Interaction,
+    usuario: discord.Member,
+    limite: app_commands.Range[int, 1, 10],
+    accion: app_commands.Choice[str],
+    duracion: Optional[app_commands.Range[int, 1, 40320]] = None,
+    unidad: Optional[app_commands.Choice[str]] = None,
+    motivo: Optional[str] = None,
+):
+    guild = interaction.guild
+    moderator = interaction.user
+    if guild is None or not isinstance(moderator, discord.Member):
+        await interaction.response.send_message("Este comando solo funciona dentro de un servidor.", ephemeral=True)
+        return
+    if not (moderator.guild_permissions.moderate_members or moderator.guild_permissions.administrator or moderator.id == guild.owner_id):
+        await interaction.response.send_message("Necesitas Moderar miembros o Administrador para usar este comando.", ephemeral=True)
+        return
+    if usuario.bot or usuario.id == guild.owner_id or usuario.id == moderator.id:
+        await interaction.response.send_message("No puedes advertir a bots, al propietario ni a ti mismo.", ephemeral=True)
+        return
+    bot_member = guild.me
+    if bot_member is None or usuario.top_role >= bot_member.top_role:
+        await interaction.response.send_message("No puedo gestionar a ese miembro: su rol está por encima o al nivel del bot.", ephemeral=True)
+        return
+    if moderator.id != guild.owner_id and usuario.top_role >= moderator.top_role:
+        await interaction.response.send_message("No puedes advertir a alguien con un rol igual o superior al tuyo.", ephemeral=True)
+        return
+    if accion.value == "timeout" and (duracion is None or unidad is None):
+        await interaction.response.send_message("Para Silenciar, indica una duración y una unidad (minutos u horas).", ephemeral=True)
+        return
+
+    guild_key = str(guild.id)
+    user_key = str(usuario.id)
+    server_warnings = warnings.setdefault(guild_key, {})
+    history = server_warnings.setdefault(user_key, [])
+    if not isinstance(history, list):
+        history = []
+        server_warnings[user_key] = history
+    reason = (motivo or "Sin motivo").strip()[:500] or "Sin motivo"
+    history.append({"moderator_id": moderator.id, "reason": reason, "created_at": int(time.time())})
+    save_warnings()
+    count = len(history)
+
+    if count >= int(limite):
+        duration_seconds_value = None
+        if accion.value == "timeout":
+            duration_seconds_value = int(duracion) * (60 if unidad.value == "minutes" else 3600)
+            duration_seconds_value = min(duration_seconds_value, 28 * 86400)
+        sanction_reason = f"Límite de {limite} advertencia(s). Último motivo: {reason}"
+        result = await apply_warning_action(guild, moderator, usuario, accion.value, duration_seconds_value, sanction_reason)
+        # Clear the count only when the selected action was carried out successfully.
+        action_succeeded = any(phrase in result for phrase in ("fue baneado", "fue expulsado", "fue silenciado"))
+        if action_succeeded:
+            server_warnings.pop(user_key, None)
+            save_warnings()
+        await interaction.response.send_message(
+            f"⚠️ Advertencia **({count}/{limite})** para {usuario.mention}. Motivo: {reason}\n{result}",
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+        )
+        return
+
+    await interaction.response.send_message(
+        f"⚠️ {usuario.mention} recibió una advertencia (**{count}/{limite}**).\nMotivo: {reason}",
+        allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+    )
+
+
+@tree.command(name="unwarn", description="Quita todas las advertencias de un miembro", guild=GUILD)
+@app_commands.default_permissions(moderate_members=True)
+@app_commands.describe(usuario="Miembro al que se le quitarán las advertencias", motivo="Motivo opcional")
+async def unwarn_command(interaction: discord.Interaction, usuario: discord.Member, motivo: Optional[str] = None):
+    guild = interaction.guild
+    moderator = interaction.user
+    if guild is None or not isinstance(moderator, discord.Member):
+        await interaction.response.send_message("Este comando solo funciona dentro de un servidor.", ephemeral=True)
+        return
+    if not (moderator.guild_permissions.moderate_members or moderator.guild_permissions.administrator or moderator.id == guild.owner_id):
+        await interaction.response.send_message("Necesitas Moderar miembros o Administrador para usar este comando.", ephemeral=True)
+        return
+    guild_key = str(guild.id)
+    user_key = str(usuario.id)
+    history = warnings.get(guild_key, {}).pop(user_key, [])
+    save_warnings()
+    if history:
+        detail = f" Se quitaron **{len(history)}** advertencia(s)."
+    else:
+        detail = " El usuario no tenía advertencias registradas."
+    note = f" Motivo: {motivo.strip()[:500]}" if motivo and motivo.strip() else ""
+    await interaction.response.send_message(
+        f"✅ Se reiniciaron las advertencias de {usuario.mention}.{detail}{note}",
+        allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+    )
+'''
+    marker = '@tree.command(name="avatar", description="Muestra avatar y banner de un miembro", guild=GUILD)'
+    if marker not in source:
+        raise RuntimeError("No encontré el lugar para registrar /warn y /unwarn.")
+    source = source.replace(marker, warning_commands + "\n\n" + marker, 1)
 
     old_afk = (
         '    state = afk_users.pop((message.guild.id, message.author.id), None)\n'
