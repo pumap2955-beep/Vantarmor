@@ -1,8 +1,9 @@
 from pathlib import Path
+import re
 
 
-PATCH_MARKER = "# VANTARMOR_MESSAGE_REACTIONS_V2"
-HELPERS = r'''# VANTARMOR_MESSAGE_REACTIONS_V2
+REACTION_MARKER = "# VANTARMOR_MESSAGE_REACTIONS_V2"
+REACTION_HELPERS = r'''# VANTARMOR_MESSAGE_REACTIONS_V2
 KISS_GIFS = (
     "https://media.tenor.com/-I2QfQvG8fEAAAAC/anime-kiss.gif",
     "https://media.giphy.com/media/10UVJ0IXjUbPug/giphy.gif",
@@ -129,34 +130,158 @@ async def handle_reaction_command(message, content):
     return True
 '''
 
+AFK_COOKIE_MARKER = "# VANTARMOR_AFK_COOKIE_FIX"
+AFK_COOKIE_HELPERS = r'''# VANTARMOR_AFK_COOKIE_FIX
+
+def elapsed_label(seconds):
+    seconds = max(0, int(seconds))
+    units = ((365 * 86400, "a"), (30 * 86400, "d"), (86400, "d"), (3600, "h"), (60, "m"))
+    for size, suffix in units:
+        if seconds >= size:
+            count = seconds // size
+            if size == 365 * 86400:
+                return f"{count} año(s)"
+            if size == 30 * 86400:
+                return f"{count} mes(es)"
+            if size == 86400:
+                return f"{count} día(s)"
+            if size == 3600:
+                return f"{count}h"
+            return f"{count}m"
+    return f"{seconds}s"
+
+
+def afk_departure_text(user, state):
+    duration = elapsed_label(time.time() - state.get("started", time.time()))
+    reason = state.get("reason") or "Sin motivo"
+    return f"👋 {user.mention} ha salido de su estado AFK.\n⏱️ Llevaba **{duration}** AFK.\n📝 Motivo: {reason}"
+
+
+class CookieGameView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=30)
+        self.scores = {}
+        self.names = {}
+        self.message = None
+        self.finished = False
+
+    @discord.ui.button(label="🍪 ¡Morder!", style=discord.ButtonStyle.success)
+    async def bite(self, interaction, button):
+        if self.finished:
+            await interaction.response.send_message("La partida ya terminó.", ephemeral=True)
+            return
+        user_id = interaction.user.id
+        self.scores[user_id] = self.scores.get(user_id, 0) + 1
+        self.names[user_id] = interaction.user.display_name
+        total = sum(self.scores.values())
+        await interaction.response.edit_message(
+            content=f"🍪 ¡A morder! Llevas **{self.scores[user_id]}** mordisco(s).\n"
+                    f"Mordiscos totales: **{total}**. ¡La partida termina en 30 segundos!",
+            view=self,
+        )
+
+    async def on_timeout(self):
+        self.finished = True
+        for item in self.children:
+            item.disabled = True
+        if not self.scores:
+            result = "🍪 Se acabó el tiempo: ¡nadie alcanzó a morder la galleta!"
+        else:
+            best = max(self.scores.values())
+            winners = [self.names[user_id] for user_id, score in self.scores.items() if score == best]
+            winner_text = ", ".join(winners)
+            result = f"🍪 ¡Se acabó el tiempo! **{winner_text}** ganó con **{best}** mordisco(s)."
+        if self.message is not None:
+            try:
+                await self.message.edit(content=result, view=self)
+            except discord.HTTPException:
+                pass
+'''
+
+
+def _remove_generated_block(source: str, marker: str, next_marker: str) -> str:
+    if marker not in source:
+        return source
+    start = source.index(marker)
+    end = source.index(next_marker, start)
+    return source[:start] + source[end:]
+
 
 def patch_app(app_file: Path) -> None:
     source = app_file.read_text(encoding="utf-8")
     event_marker = "@client.event\nasync def on_message(message):\n"
     if event_marker not in source:
-        raise RuntimeError("No encontré on_message en app.py para añadir ?kiss y ?slap.")
+        raise RuntimeError("No encontré on_message en app.py para aplicar las correcciones.")
 
-    # Replace the earlier runtime-injected implementation if this container has
-    # already been patched by an older release.
-    old_marker = "# VANTARMOR_MESSAGE_REACTIONS\n"
-    if old_marker in source:
-        start = source.index(old_marker)
-        end = source.index(event_marker, start)
-        source = source[:start] + source[end:]
-
-    # The current patch is idempotent and always replaces the generated block
-    # up to on_message so a service restart picks up updates cleanly.
-    if PATCH_MARKER in source:
-        start = source.index(PATCH_MARKER)
-        end = source.index(event_marker, start)
-        source = source[:start] + source[end:]
+    # Keep runtime-generated code idempotent, including on persistent Railway volumes.
+    source = _remove_generated_block(source, REACTION_MARKER, event_marker)
+    source = _remove_generated_block(source, "# VANTARMOR_MESSAGE_REACTIONS\n", event_marker)
+    source = _remove_generated_block(source, AFK_COOKIE_MARKER, '@tree.command(name="cookie"')
 
     content_line = '    content = message.content.strip()\n'
-    if content_line not in source:
-        raise RuntimeError("No encontré la línea de contenido de on_message en app.py.")
+    command_line = "    command = parts[0].lower() if parts else \"\"\n"
+    if content_line not in source or command_line not in source:
+        raise RuntimeError("No encontré el contenido o el parser de comandos de on_message.")
 
-    source = source.replace(event_marker, HELPERS + "\n\n" + event_marker, 1)
-    injection = "    if await handle_reaction_command(message, content):\n        return\n"
-    if injection not in source:
-        source = source.replace(content_line, content_line + injection, 1)
+    # Install reaction helpers and dispatch for the two reply-to-message commands.
+    source = source.replace(event_marker, REACTION_HELPERS + "\n\n" + event_marker, 1)
+    reaction_dispatch = "    if await handle_reaction_command(message, content):\n        return\n"
+    if reaction_dispatch not in source:
+        source = source.replace(content_line, content_line + reaction_dispatch, 1)
+
+    # Install AFK duration formatting and the playable cookie mini-game.
+    cookie_decorator = '@tree.command(name="cookie", description="Juego de tocar la galleta", guild=GUILD)'
+    if cookie_decorator not in source:
+        raise RuntimeError("No encontré el comando /cookie en app.py.")
+    source = source.replace(cookie_decorator, AFK_COOKIE_HELPERS + "\n\n" + cookie_decorator, 1)
+
+    cookie_block = re.compile(
+        r'@tree\.command\(name="cookie", description="Juego de tocar la galleta", guild=GUILD\)\n'
+        r'async def cookie\(interaction\):\n'
+        r'    await interaction\.response\.send_message\([^\n]*\)'
+    )
+    cookie_replacement = '''@tree.command(name="cookie", description="Juego de tocar la galleta", guild=GUILD)
+async def cookie(interaction):
+    view = CookieGameView()
+    await interaction.response.send_message(
+        "🍪 ¡Empieza el juego! Pulsa **¡Morder!** tantas veces como puedas antes de que pasen 30 segundos.",
+        view=view,
+    )
+    view.message = await interaction.original_response()'''
+    source, cookie_count = cookie_block.subn(cookie_replacement, source, count=1)
+    if cookie_count != 1:
+        raise RuntimeError("No pude actualizar el comando /cookie para iniciar el minijuego.")
+
+    # On a normal text message, announce AFK exit before handling that message.
+    old_afk = (
+        '    state = afk_users.pop((message.guild.id, message.author.id), None)\n'
+        '    if state:\n'
+        '        await message.channel.send(f"{message.author.mention} salió de AFK tras {elapsed_label(time.time() - state[\'started\'])}.", allowed_mentions=discord.AllowedMentions.none())\n'
+    )
+    afk_dispatch = '''    state = afk_users.pop((message.guild.id, message.author.id), None)
+    if state:
+        await message.channel.send(
+            afk_departure_text(message.author, state),
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+        )
+'''
+    if old_afk in source:
+        source = source.replace(old_afk, "", 1)
+    if afk_dispatch not in source:
+        source = source.replace(command_line, command_line + afk_dispatch, 1)
+
+    # Slash commands do not produce on_message events; clear AFK on any slash use too.
+    interaction_marker = "        data = interaction.data or {}\n"
+    slash_afk = '''        afk_state = afk_users.pop((interaction.guild.id, interaction.user.id), None)
+        if afk_state and interaction.channel is not None:
+            await interaction.channel.send(
+                afk_departure_text(interaction.user, afk_state),
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+'''
+    if interaction_marker not in source:
+        raise RuntimeError("No encontré el manejador de interacciones para corregir /afk.")
+    if slash_afk not in source:
+        source = source.replace(interaction_marker, interaction_marker + slash_afk, 1)
+
     app_file.write_text(source, encoding="utf-8")
