@@ -135,19 +135,16 @@ AFK_COOKIE_HELPERS = r'''# VANTARMOR_AFK_COOKIE_FIX
 
 def elapsed_label(seconds):
     seconds = max(0, int(seconds))
-    units = ((365 * 86400, "a"), (30 * 86400, "d"), (86400, "d"), (3600, "h"), (60, "m"))
-    for size, suffix in units:
-        if seconds >= size:
-            count = seconds // size
-            if size == 365 * 86400:
-                return f"{count} año(s)"
-            if size == 30 * 86400:
-                return f"{count} mes(es)"
-            if size == 86400:
-                return f"{count} día(s)"
-            if size == 3600:
-                return f"{count}h"
-            return f"{count}m"
+    if seconds >= 365 * 86400:
+        return f"{seconds // (365 * 86400)} año(s)"
+    if seconds >= 30 * 86400:
+        return f"{seconds // (30 * 86400)} mes(es)"
+    if seconds >= 86400:
+        return f"{seconds // 86400} día(s)"
+    if seconds >= 3600:
+        return f"{seconds // 3600}h"
+    if seconds >= 60:
+        return f"{seconds // 60}m"
     return f"{seconds}s"
 
 
@@ -159,41 +156,39 @@ def afk_departure_text(user, state):
 
 class CookieGameView(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=30)
-        self.scores = {}
-        self.names = {}
+        # The winner button is available briefly; no periodic message edits occur.
+        super().__init__(timeout=60)
         self.message = None
-        self.finished = False
+        self.winner_id = None
+        self.winner_lock = asyncio.Lock()
 
-    @discord.ui.button(label="🍪 ¡Morder!", style=discord.ButtonStyle.success)
-    async def bite(self, interaction, button):
-        if self.finished:
-            await interaction.response.send_message("La partida ya terminó.", ephemeral=True)
-            return
-        user_id = interaction.user.id
-        self.scores[user_id] = self.scores.get(user_id, 0) + 1
-        self.names[user_id] = interaction.user.display_name
-        total = sum(self.scores.values())
-        await interaction.response.edit_message(
-            content=f"🍪 ¡A morder! Llevas **{self.scores[user_id]}** mordisco(s).\n"
-                    f"Mordiscos totales: **{total}**. ¡La partida termina en 30 segundos!",
-            view=self,
-        )
+    @discord.ui.button(label="🍪", style=discord.ButtonStyle.success)
+    async def grab_cookie(self, interaction, button):
+        async with self.winner_lock:
+            if self.winner_id is not None:
+                await interaction.response.send_message("La galleta ya tiene dueño. 🍪", ephemeral=True)
+                return
+            self.winner_id = interaction.user.id
+            for child in self.children:
+                child.disabled = True
+            await interaction.response.edit_message(
+                content=f"🍪 {interaction.user.mention} fue la primera persona en ganar la galleta. ¡Felicidades!",
+                view=self,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+            self.stop()
 
     async def on_timeout(self):
-        self.finished = True
-        for item in self.children:
-            item.disabled = True
-        if not self.scores:
-            result = "🍪 Se acabó el tiempo: ¡nadie alcanzó a morder la galleta!"
-        else:
-            best = max(self.scores.values())
-            winners = [self.names[user_id] for user_id, score in self.scores.items() if score == best]
-            winner_text = ", ".join(winners)
-            result = f"🍪 ¡Se acabó el tiempo! **{winner_text}** ganó con **{best}** mordisco(s)."
+        if self.winner_id is not None:
+            return
+        for child in self.children:
+            child.disabled = True
         if self.message is not None:
             try:
-                await self.message.edit(content=result, view=self)
+                await self.message.edit(
+                    content="🍪 Nadie alcanzó la galleta esta vez. ¡Inténtalo en la próxima partida!",
+                    view=self,
+                )
             except discord.HTTPException:
                 pass
 '''
@@ -213,23 +208,20 @@ def patch_app(app_file: Path) -> None:
     if event_marker not in source:
         raise RuntimeError("No encontré on_message en app.py para aplicar las correcciones.")
 
-    # Keep runtime-generated code idempotent, including on persistent Railway volumes.
     source = _remove_generated_block(source, REACTION_MARKER, event_marker)
     source = _remove_generated_block(source, "# VANTARMOR_MESSAGE_REACTIONS\n", event_marker)
     source = _remove_generated_block(source, AFK_COOKIE_MARKER, '@tree.command(name="cookie"')
 
     content_line = '    content = message.content.strip()\n'
-    command_line = "    command = parts[0].lower() if parts else \"\"\n"
+    command_line = '    command = parts[0].lower() if parts else ""\n'
     if content_line not in source or command_line not in source:
         raise RuntimeError("No encontré el contenido o el parser de comandos de on_message.")
 
-    # Install reaction helpers and dispatch for the two reply-to-message commands.
     source = source.replace(event_marker, REACTION_HELPERS + "\n\n" + event_marker, 1)
     reaction_dispatch = "    if await handle_reaction_command(message, content):\n        return\n"
     if reaction_dispatch not in source:
         source = source.replace(content_line, content_line + reaction_dispatch, 1)
 
-    # Install AFK duration formatting and the playable cookie mini-game.
     cookie_decorator = '@tree.command(name="cookie", description="Juego de tocar la galleta", guild=GUILD)'
     if cookie_decorator not in source:
         raise RuntimeError("No encontré el comando /cookie en app.py.")
@@ -242,17 +234,18 @@ def patch_app(app_file: Path) -> None:
     )
     cookie_replacement = '''@tree.command(name="cookie", description="Juego de tocar la galleta", guild=GUILD)
 async def cookie(interaction):
+    await interaction.response.send_message("🍪 La galleta aparece en **5 segundos**…")
+    await asyncio.sleep(5)
     view = CookieGameView()
-    await interaction.response.send_message(
-        "🍪 ¡Empieza el juego! Pulsa **¡Morder!** tantas veces como puedas antes de que pasen 30 segundos.",
+    await interaction.edit_original_response(
+        content="🍪 ¡Ya apareció! Sé la primera persona en tocar el botón verde.",
         view=view,
     )
     view.message = await interaction.original_response()'''
     source, cookie_count = cookie_block.subn(cookie_replacement, source, count=1)
     if cookie_count != 1:
-        raise RuntimeError("No pude actualizar el comando /cookie para iniciar el minijuego.")
+        raise RuntimeError("No pude actualizar el comando /cookie con la cuenta regresiva y el botón.")
 
-    # On a normal text message, announce AFK exit before handling that message.
     old_afk = (
         '    state = afk_users.pop((message.guild.id, message.author.id), None)\n'
         '    if state:\n'
@@ -270,7 +263,6 @@ async def cookie(interaction):
     if afk_dispatch not in source:
         source = source.replace(command_line, command_line + afk_dispatch, 1)
 
-    # Slash commands do not produce on_message events; clear AFK on any slash use too.
     interaction_marker = "        data = interaction.data or {}\n"
     slash_afk = '''        afk_state = afk_users.pop((interaction.guild.id, interaction.user.id), None)
         if afk_state and interaction.channel is not None:
