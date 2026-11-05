@@ -64,6 +64,8 @@
     ['?ban / ?kick', 'Responde al mensaje de la persona que quieres banear o expulsar.'],
     ['?afk [motivo]', 'Activa el estado AFK con un motivo opcional.'],
     ['?avatar', 'Muestra tu avatar; responde a un mensaje para ver el de otra persona.'],
+    ['?kiss (responder a un mensaje)', 'Responde al mensaje de una persona para enviarle un beso. Puede coincidir o rechazar con los botones.'],
+    ['?slap (responder a un mensaje)', 'Responde al mensaje de una persona para enviarle una bofetada de broma; puede devolverla con el botón.'],
   ];
 
   function node(tag, className, text) {
@@ -190,9 +192,15 @@
       new MutationObserver(updateProfile).observe(accountName, { childList: true, characterData: true, subtree: true });
     }
 
+    const routeFromHash = () => {
+      const route = location.hash.replace('#', '');
+      const match = items.find(([, id]) => id === `va-${route}`);
+      if (match) setPage(match[1]);
+    };
+    window.addEventListener('hashchange', routeFromHash);
+    routeFromHash();
+
     document.body.classList.add('va-navigation-ready');
-    const error = document.getElementById('login-error');
-    if (error && error.textContent.trim()) setPage('va-home');
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true });
