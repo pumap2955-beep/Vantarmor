@@ -42,7 +42,11 @@ def get_cookie(handler, name):
 def discord_request(path, access_token):
     request = Request(
         f"{DISCORD_API}{path}",
-        headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+            "User-Agent": "Vantarmor (https://vantarmor-production.up.railway.app, 1.0)",
+        },
     )
     with urlopen(request, timeout=15) as response:
         return json.loads(response.read().decode("utf-8"))
@@ -50,8 +54,6 @@ def discord_request(path, access_token):
 
 def exchange_code(code, settings):
     body = urlencode({
-        "client_id": settings["client_id"],
-        "client_secret": settings["client_secret"],
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": settings["redirect_uri"],
@@ -59,23 +61,40 @@ def exchange_code(code, settings):
     request = Request(
         f"{DISCORD_API}/oauth2/token",
         data=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "User-Agent": "Vantarmor (https://vantarmor-production.up.railway.app, 1.0)",
+        },
         method="POST",
     )
+    request.add_header("Authorization", "Basic " + __import__("base64").b64encode(
+        f"{settings['client_id']}:{settings['client_secret']}".encode("utf-8")
+    ).decode("ascii"))
     with urlopen(request, timeout=15) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
 def discord_error_details(error):
-    """Extract only safe OAuth error fields; never log request credentials."""
+    """Extract safe error fields and response metadata; never log credentials."""
     try:
-        payload = json.loads(error.read(4096).decode("utf-8", errors="replace"))
-    except (ValueError, OSError):
-        return "unknown", "No se recibió una descripción válida de Discord."
+        raw = error.read(4096).decode("utf-8", errors="replace")
+    except (OSError, ValueError):
+        raw = ""
+    try:
+        payload = json.loads(raw) if raw else {}
+    except ValueError:
+        payload = {}
     code = str(payload.get("error") or payload.get("code") or "unknown")[:80]
-    description = str(payload.get("error_description") or payload.get("message") or "Sin descripción")
-    description = " ".join(description.split())[:240]
-    return code, description
+    description = str(payload.get("error_description") or payload.get("message") or "")
+    description = " ".join(description.split())[:240] or "Sin cuerpo JSON"
+    response_headers = getattr(error, "headers", {})
+    metadata = {
+        key: str(response_headers.get(key, ""))[:120]
+        for key in ("Content-Type", "Server", "CF-Ray", "Retry-After")
+        if response_headers.get(key)
+    }
+    return code, description, metadata
 
 
 def oauth_failure_message(stage, status, code):
@@ -85,7 +104,7 @@ def oauth_failure_message(stage, status, code):
         return "Discord rechazó el código de autorización (invalid_grant). Reintenta desde la web y verifica que la URL de retorno coincida exactamente en Railway y Discord."
     if stage == "profile":
         return f"El inicio de sesión fue aceptado, pero Discord rechazó la consulta del perfil (HTTP {status}). Vuelve a iniciar sesión."
-    return f"Discord rechazó el intercambio OAuth (HTTP {status}, {code}). Revisa los logs de Railway para ver la etapa y el detalle seguro del error."
+    return f"Discord rechazó el intercambio OAuth (HTTP {status}, {code}). Comprueba los logs de Railway para ver los metadatos de respuesta."
 
 
 def session_for(handler):
@@ -183,10 +202,10 @@ class WebsiteHandler(SimpleHTTPRequestHandler):
                 user = discord_request("/users/@me", access_token)
                 expires_in = max(60, int(token_data.get("expires_in", 3600)))
             except HTTPError as error:
-                error_code, description = discord_error_details(error)
+                error_code, description, metadata = discord_error_details(error)
                 print(
                     f"Discord OAuth rechazado; etapa={stage}, HTTP={error.code}, "
-                    f"error={error_code}, detalle={description}"
+                    f"error={error_code}, detalle={description}, respuesta={json.dumps(metadata, ensure_ascii=False)}"
                 )
                 self.send_text(oauth_failure_message(stage, error.code, error_code), 502)
                 return
@@ -233,8 +252,11 @@ class WebsiteHandler(SimpleHTTPRequestHandler):
             try:
                 guilds = discord_request("/users/@me/guilds", session["access_token"])
             except HTTPError as error:
-                code, description = discord_error_details(error)
-                print(f"Consulta de servidores rechazada; HTTP={error.code}, error={code}, detalle={description}")
+                code, description, metadata = discord_error_details(error)
+                print(
+                    f"Consulta de servidores rechazada; HTTP={error.code}, error={code}, "
+                    f"detalle={description}, respuesta={json.dumps(metadata, ensure_ascii=False)}"
+                )
                 self.send_json({"error": "guild_lookup_failed"}, 502)
                 return
             except (URLError, TimeoutError, ValueError) as error:
