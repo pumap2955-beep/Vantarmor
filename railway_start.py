@@ -13,14 +13,14 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from message_reactions_patch import patch_app
-from status_patch import patch_status
 
 ROOT = Path(__file__).resolve().parent
 APP_FILE = ROOT / "app.py"
 WEB_DIR = ROOT / "website"
-STATUS_FILE = ROOT / "bot_status.json"
 DISCORD_API = "https://discord.com/api/v10"
 DEFAULT_CLIENT_ID = "1567331667826311288"
+PUBLIC_DOMAIN = "vantarmors-production.up.railway.app"
+DEFAULT_REDIRECT_URI = f"https://{PUBLIC_DOMAIN}/auth/callback"
 SESSIONS = {}
 SESSIONS_LOCK = threading.RLock()
 
@@ -29,7 +29,7 @@ def oauth_settings():
     return {
         "client_id": os.getenv("DISCORD_CLIENT_ID", DEFAULT_CLIENT_ID).strip(),
         "client_secret": os.getenv("DISCORD_CLIENT_SECRET", "").strip(),
-        "redirect_uri": os.getenv("DISCORD_REDIRECT_URI", "").strip(),
+        "redirect_uri": os.getenv("DISCORD_REDIRECT_URI", DEFAULT_REDIRECT_URI).strip(),
     }
 
 
@@ -49,7 +49,7 @@ def discord_request(path, access_token):
         headers={
             "Authorization": f"Bearer {access_token}",
             "Accept": "application/json",
-            "User-Agent": "Vantarmor Commands (https://vantarmo-production.up.railway.app, 1.0)",
+            "User-Agent": f"Vantarmor (https://{PUBLIC_DOMAIN}, 1.0)",
         },
     )
     with urlopen(request, timeout=15) as response:
@@ -72,7 +72,7 @@ def exchange_code(code, settings):
         headers={
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
-            "User-Agent": "Vantarmor Commands (https://vantarmo-production.up.railway.app, 1.0)",
+            "User-Agent": f"Vantarmor (https://{PUBLIC_DOMAIN}, 1.0)",
             "Authorization": f"Basic {credentials}",
         },
         method="POST",
@@ -82,6 +82,7 @@ def exchange_code(code, settings):
 
 
 def discord_error_details(error):
+    """Extract safe error fields and response metadata; never log credentials."""
     try:
         raw = error.read(4096).decode("utf-8", errors="replace")
     except (OSError, ValueError):
@@ -91,20 +92,25 @@ def discord_error_details(error):
     except ValueError:
         payload = {}
     code = str(payload.get("error") or payload.get("code") or "unknown")[:80]
-    description = " ".join(str(payload.get("error_description") or payload.get("message") or "").split())[:240]
-    headers = getattr(error, "headers", {})
-    metadata = {key: str(headers.get(key, ""))[:120] for key in ("Content-Type", "Server", "CF-Ray", "Retry-After") if headers.get(key)}
-    return code, description or "Sin cuerpo JSON", metadata
+    description = str(payload.get("error_description") or payload.get("message") or "")
+    description = " ".join(description.split())[:240] or "Sin cuerpo JSON"
+    response_headers = getattr(error, "headers", {})
+    metadata = {
+        key: str(response_headers.get(key, ""))[:120]
+        for key in ("Content-Type", "Server", "CF-Ray", "Retry-After")
+        if response_headers.get(key)
+    }
+    return code, description, metadata
 
 
 def oauth_failure_message(stage, status, code):
     if code == "invalid_client":
-        return "Discord rechazó las credenciales de la aplicación. Comprueba que Client ID y Client Secret pertenezcan a la misma aplicación."
+        return "Discord rechazó las credenciales de la aplicación (invalid_client). Comprueba que el Client ID y Client Secret sean de la misma aplicación."
     if code == "invalid_grant":
-        return "Discord rechazó el código OAuth. Revisa que la Redirect URL coincida exactamente en Railway y Discord, e inténtalo otra vez."
+        return "Discord rechazó el código de autorización (invalid_grant). Reintenta desde la web y verifica que la URL de retorno coincida exactamente en Railway y Discord."
     if stage == "profile":
-        return f"El inicio de sesión fue aceptado, pero Discord rechazó la consulta del perfil (HTTP {status})."
-    return f"Discord rechazó el intercambio OAuth (HTTP {status}, {code}). Revisa los logs de Railway."
+        return f"El inicio de sesión fue aceptado, pero Discord rechazó la consulta del perfil (HTTP {status}). Vuelve a iniciar sesión."
+    return f"Discord rechazó el intercambio OAuth (HTTP {status}, {code}). Comprueba los logs de Railway para ver los metadatos de respuesta."
 
 
 def session_for(handler):
@@ -152,7 +158,10 @@ class WebsiteHandler(SimpleHTTPRequestHandler):
 
         if path == "/config.json":
             settings = oauth_settings()
-            self.send_json({"auth_enabled": bool(all(settings.values())), "support_url": os.getenv("SUPPORT_URL", "")})
+            self.send_json({
+                "auth_enabled": bool(all(settings.values())),
+                "support_url": os.getenv("SUPPORT_URL", ""),
+            })
             return
 
         if path == "/auth/discord":
@@ -190,6 +199,7 @@ class WebsiteHandler(SimpleHTTPRequestHandler):
             if not all(settings.values()):
                 self.send_text("Falta configurar Discord OAuth en Railway.", 503)
                 return
+
             stage = "token_exchange"
             try:
                 token_data = exchange_code(code, settings)
@@ -199,7 +209,10 @@ class WebsiteHandler(SimpleHTTPRequestHandler):
                 expires_in = max(60, int(token_data.get("expires_in", 3600)))
             except HTTPError as error:
                 error_code, description, metadata = discord_error_details(error)
-                print(f"Discord OAuth rechazado; etapa={stage}, HTTP={error.code}, error={error_code}, detalle={description}, respuesta={json.dumps(metadata, ensure_ascii=False)}")
+                print(
+                    f"Discord OAuth rechazado; etapa={stage}, HTTP={error.code}, "
+                    f"error={error_code}, detalle={description}, respuesta={json.dumps(metadata, ensure_ascii=False)}"
+                )
                 self.send_text(oauth_failure_message(stage, error.code, error_code), 502)
                 return
             except (URLError, TimeoutError) as error:
@@ -211,17 +224,14 @@ class WebsiteHandler(SimpleHTTPRequestHandler):
                 self.send_text("Discord devolvió una respuesta inesperada. Vuelve a iniciar sesión.", 502)
                 return
 
-            user_id = str(user.get("id", ""))
-            avatar_hash = user.get("avatar")
-            avatar_url = (
-                f"https://cdn.discordapp.com/avatars/{user_id}/{avatar_hash}.png?size=256"
-                if avatar_hash else f"https://cdn.discordapp.com/embed/avatars/{int(user_id or 0) % 6}.png"
-            )
             session_id = secrets.token_urlsafe(32)
             with SESSIONS_LOCK:
                 SESSIONS[session_id] = {
                     "access_token": access_token,
-                    "user": {"id": user_id, "username": user.get("global_name") or user.get("username", "Discord"), "avatar_url": avatar_url},
+                    "user": {
+                        "id": str(user.get("id", "")),
+                        "username": user.get("global_name") or user.get("username", "Discord"),
+                    },
                     "expires_at": time.time() + expires_in,
                 }
             self.send_response(302)
@@ -240,41 +250,6 @@ class WebsiteHandler(SimpleHTTPRequestHandler):
             self.send_json({"user": session["user"]})
             return
 
-        if path == "/api/status":
-            session = session_for(self)
-            if not session:
-                self.send_json({"error": "unauthenticated"}, 401)
-                return
-            try:
-                user_guilds = discord_request("/users/@me/guilds", session["access_token"])
-                manageable = {}
-                for guild in user_guilds:
-                    try:
-                        permissions = int(guild.get("permissions", "0"))
-                    except (TypeError, ValueError):
-                        permissions = 0
-                    if guild.get("owner") or permissions & (0x8 | 0x20):
-                        manageable[str(guild.get("id", ""))] = str(guild.get("name", "Servidor"))
-                try:
-                    status = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    status = {}
-                bot_ids = {str(item.get("id")) for item in status.get("guilds", []) if isinstance(item, dict)}
-                visible_servers = [{"id": gid, "name": name} for gid, name in manageable.items() if gid in bot_ids]
-                self.send_json({
-                    "online": bool(status.get("online")) and time.time() - float(status.get("updated_at", 0)) < 120,
-                    "guild_count": int(status.get("guild_count", 0)),
-                    "active_commands": int(status.get("active_commands", 0)),
-                    "servers": visible_servers,
-                })
-            except HTTPError as error:
-                print(f"Estado de servidores: Discord HTTP {error.code}")
-                self.send_json({"error": "guild_lookup_failed"}, 502)
-            except (URLError, TimeoutError, ValueError, TypeError) as error:
-                print(f"Estado de servidores no disponible; tipo={type(error).__name__}")
-                self.send_json({"error": "status_unavailable"}, 502)
-            return
-
         if path == "/api/guilds":
             session = session_for(self)
             if not session:
@@ -284,7 +259,10 @@ class WebsiteHandler(SimpleHTTPRequestHandler):
                 guilds = discord_request("/users/@me/guilds", session["access_token"])
             except HTTPError as error:
                 code, description, metadata = discord_error_details(error)
-                print(f"Consulta de servidores rechazada; HTTP={error.code}, error={code}, detalle={description}, respuesta={json.dumps(metadata, ensure_ascii=False)}")
+                print(
+                    f"Consulta de servidores rechazada; HTTP={error.code}, error={code}, "
+                    f"detalle={description}, respuesta={json.dumps(metadata, ensure_ascii=False)}"
+                )
                 self.send_json({"error": "guild_lookup_failed"}, 502)
                 return
             except (URLError, TimeoutError, ValueError) as error:
@@ -298,7 +276,12 @@ class WebsiteHandler(SimpleHTTPRequestHandler):
                 except (TypeError, ValueError):
                     permissions = 0
                 if guild.get("owner") or permissions & (0x8 | 0x20):
-                    manageable.append({"id": str(guild.get("id", "")), "name": str(guild.get("name", "Servidor")), "icon": guild.get("icon"), "owner": bool(guild.get("owner"))})
+                    manageable.append({
+                        "id": str(guild.get("id", "")),
+                        "name": str(guild.get("name", "Servidor")),
+                        "icon": guild.get("icon"),
+                        "owner": bool(guild.get("owner")),
+                    })
             self.send_json({"guilds": manageable})
             return
 
@@ -313,16 +296,12 @@ class WebsiteHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             return
 
-        if path in ("/", "/index.html"):
-            index_file = WEB_DIR / "index.html"
-            if not index_file.is_file():
-                self.send_text("No encontré website/index.html.", 500)
-                return
-            html = index_file.read_text(encoding="utf-8")
-            for script in ('/assets/navigation.js', '/assets/commands-dashboard.js'):
-                script_tag = f'<script src="{script}" defer></script>'
-                if script_tag not in html:
-                    html = html.replace("</body>", f"  {script_tag}\n</body>", 1)
+        if path == "/" or path == "/index.html":
+            # Inject the authenticated dashboard navigation without changing the existing login shell.
+            html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+            script_tag = '<script src="/assets/navigation.js" defer></script>'
+            if script_tag not in html:
+                html = html.replace("</body>", f"  {script_tag}\n</body>", 1)
             payload = html.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -347,7 +326,7 @@ def start_website():
     if not (WEB_DIR / "index.html").is_file():
         print("No encontré website/index.html; no iniciaré la web.")
         return
-    port = int(os.getenv("PORT", "8080"))
+    port = int(os.getenv("PORT", "7070"))
     server = ThreadingHTTPServer(("0.0.0.0", port), WebsiteHandler)
     threading.Thread(target=server.serve_forever, name="website", daemon=True).start()
     print(f"Web iniciada en el puerto {port}")
@@ -369,6 +348,5 @@ if '"ticket_panel"' not in defaults and "'ticket_panel'" not in defaults:
     APP_FILE.write_text(source[:start] + updated + source[end:], encoding="utf-8")
 
 patch_app(APP_FILE)
-patch_status(APP_FILE)
 start_website()
 runpy.run_path(str(APP_FILE), run_name="__main__")
